@@ -1,0 +1,1044 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ระบบบันทึกค่าใช้จ่าย + Admin Dashboard</title>
+    <!-- Load Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Inter', 'Tahoma', 'sans-serif'],
+                    },
+                    colors: {
+                        'primary': '#10b981', // Emerald 500
+                        'secondary': '#f97316', // Orange 600
+                        'admin': '#6366f1', // Indigo 500 for Admin
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        input[type="number"]::-webkit-inner-spin-button, 
+        input[type="number"]::-webkit-outer-spin-button { 
+            -webkit-appearance: none;
+            margin: 0;
+        }
+        input[type="number"] {
+            -moz-appearance: textfield;
+        }
+        #report-section, #admin-section { display: none; }
+        @media print {
+            .no-print { display: none !important; }
+            .form-page { display: block !important; }
+            #report-section, #admin-section { display: none !important; }
+        }
+    </style>
+    
+    <!-- Firebase Imports -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, setDoc, getDoc, updateDoc, deleteDoc, addDoc, onSnapshot, collection, serverTimestamp, getDocs, writeBatch } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        let db = null;
+        let auth = null;
+        let currentUserId = null;
+        window.isCurrentUserAdmin = false;
+        window.isEditMode = false;
+        window.currentEditingDocId = null;
+        
+        // Global Data Stores
+        window.allEmployees = [];
+        window.allVehicles = [];
+        window.allPublicExpenses = []; // Store for Admin Dashboard
+
+        // --- ข้อมูลเริ่มต้น (Seed Data) ---
+        const INITIAL_EMPLOYEES = [
+            { id: '4241001', name: 'นาย จิระพนธ์ เพลาลี', tripFeeRate: 0, overnightFeeRate: 0 },
+            { id: '4225001', name: 'นาย นิพล เยาวะรุด', tripFeeRate: 160, overnightFeeRate: 220 },
+            { id: '4236002', name: 'นาย บุญส่ง ภูกองไชย', tripFeeRate: 180, overnightFeeRate: 220 },
+            { id: '4249001', name: 'นาย นิวพงษ์ ดีรักษา', tripFeeRate: 160, overnightFeeRate: 220 },
+            { id: '5245001', name: 'นาย เฉลิมชัย โพธิกมล', tripFeeRate: 130, overnightFeeRate: 220 },
+            { id: '4259008', name: 'นาย เทพลักษณ์ ภูกองไชย', tripFeeRate: 140, overnightFeeRate: 220 },
+            { id: '4262001', name: 'นาย ณรงค์ฤทธิ์ มาลาศรี', tripFeeRate: 160, overnightFeeRate: 220 },
+            { id: '4265011', name: 'นาย วีระยุทธ เหล่าบุรมย์', tripFeeRate: 140, overnightFeeRate: 220 },
+            { id: '4266015', name: 'นาย ณัฐกร รอดแดง', tripFeeRate: 140, overnightFeeRate: 220 },
+            { id: '4257010', name: 'นาย มนต์ชัย เหลืองทอง', tripFeeRate: 100, overnightFeeRate: 220 },
+            { id: '5249001', name: 'นาย สัมฤทธิ์ ขันประกอบ', tripFeeRate: 100, overnightFeeRate: 220 },
+            { id: '4265009', name: 'นาย นิกร สมสา', tripFeeRate: 100, overnightFeeRate: 220 },
+            { id: '4267010', name: 'นาย ธนพล ธรรมวงศ์', tripFeeRate: 100, overnightFeeRate: 220 },
+            { id: '4267019', name: 'นาย วันชัย กรอบโมกช์', tripFeeRate: 100, overnightFeeRate: 220 },
+            { id: '4267021', name: 'นาย ธรรมรัตน์ พลายเถื่อน', tripFeeRate: 100, overnightFeeRate: 220 },
+            { id: '4268003', name: 'นาย อิทธิพล จีนปาน', tripFeeRate: 100, overnightFeeRate: 220 },
+            { id: '4268005', name: 'นาย อรรถพล จันดา', tripFeeRate: 140, overnightFeeRate: 220 },
+            { id: '4268007', name: 'นาย จักรี บุญโสภา', tripFeeRate: 100, overnightFeeRate: 220 }
+        ];
+
+        const INITIAL_VEHICLES = [
+            '52-4357', '99-8940', '96-1251', '3ฒล-8250', '3ฒฎ-2853', 
+            '4ฒง-8342', '4ฒง-8831', '1ฒท-7289', '1ฒล-8817', 
+            'Vehicle 1', 'Vehicle 2', 'Vehicle 3',
+        ];
+
+        document.addEventListener('DOMContentLoaded', async () => {
+            try {
+                const app = initializeApp(firebaseConfig);
+                db = getFirestore(app);
+                auth = getAuth(app);
+                
+                const initAuth = async () => {
+                    if (initialAuthToken) {
+                        await signInWithCustomToken(auth, initialAuthToken);
+                    } else {
+                        await signInAnonymously(auth);
+                    }
+                };
+
+                await initAuth();
+
+                onAuthStateChanged(auth, (user) => {
+                    if (user) {
+                        currentUserId = user.uid;
+                        
+                        // --- ADMIN CONFIGURATION ---
+                        const ADMIN_USER_IDS = [
+                            "13157138791891081536", 
+                        ]; 
+                        
+                        // Uncomment this line to allow testing admin features locally if needed
+                        // ADMIN_USER_IDS.push(currentUserId); 
+                        
+                        window.isCurrentUserAdmin = ADMIN_USER_IDS.includes(currentUserId);
+                        
+                        setupAdminUI();
+                        subscribeToMasterData();
+                        if(document.getElementById('report-section').style.display === 'block') {
+                            window.loadExpenses();
+                        }
+                    } else {
+                        currentUserId = null;
+                    }
+                });
+
+            } catch (error) {
+                console.error("Init Error:", error);
+                window.showMessage('ไม่สามารถเชื่อมต่อฐานข้อมูลได้.', 'error');
+            }
+        });
+
+        // --- Collections Helpers ---
+        window.getExpensesRef = (userId) => collection(db, `/artifacts/${appId}/users/${userId}/delivery_expenses`);
+        window.getPublicExpensesRef = () => collection(db, `/artifacts/${appId}/public/data/delivery_expenses`);
+        window.getEmployeesCollection = () => collection(db, `/artifacts/${appId}/public/data/employees`);
+        window.getVehiclesCollection = () => collection(db, `/artifacts/${appId}/public/data/vehicles`);
+
+        // --- Master Data Subscription ---
+        let employeesUnsubscribe = null;
+        let vehiclesUnsubscribe = null;
+
+        function subscribeToMasterData() {
+            if (!db || !currentUserId) return;
+
+            if (employeesUnsubscribe) employeesUnsubscribe();
+            employeesUnsubscribe = onSnapshot(collection(db, `/artifacts/${appId}/public/data/employees`), (snapshot) => {
+                let employees = [];
+                snapshot.forEach(doc => employees.push({ _id: doc.id, ...doc.data() }));
+                
+                // Sort in memory to avoid complex query requirements
+                employees.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+                
+                if (employees.length === 0 && window.isCurrentUserAdmin) {
+                    seedInitialData();
+                } else {
+                    window.allEmployees = employees;
+                    populateEmployeesDropdown();
+                    if(window.isCurrentUserAdmin) renderAdminEmployeesTable();
+                }
+            }, (error) => { console.error("Error fetching employees:", error); });
+
+            if (vehiclesUnsubscribe) vehiclesUnsubscribe();
+            vehiclesUnsubscribe = onSnapshot(collection(db, `/artifacts/${appId}/public/data/vehicles`), (snapshot) => {
+                let vehicles = [];
+                snapshot.forEach(doc => vehicles.push({ _id: doc.id, ...doc.data() }));
+                
+                // Sort in memory
+                vehicles.sort((a, b) => (a.plateNumber || '').localeCompare(b.plateNumber || ''));
+                
+                if (vehicles.length > 0) {
+                    window.allVehicles = vehicles;
+                    populateVehiclesDropdown();
+                    if(window.isCurrentUserAdmin) renderAdminVehiclesTable();
+                }
+            }, (error) => { console.error("Error fetching vehicles:", error); });
+        }
+
+        async function seedInitialData() {
+            window.showMessage('กำลังตั้งค่าข้อมูลเริ่มต้น...', 'info');
+            const batch = writeBatch(db);
+            INITIAL_EMPLOYEES.forEach(emp => { batch.set(doc(window.getEmployeesCollection()), emp); });
+            INITIAL_VEHICLES.forEach(v => { batch.set(doc(window.getVehiclesCollection()), { plateNumber: v }); });
+            await batch.commit();
+            window.showMessage('นำเข้าข้อมูลเริ่มต้นสำเร็จ', 'success');
+        }
+
+        function setupAdminUI() {
+            const reportBtn = document.getElementById('showReportBtn');
+            reportBtn.disabled = false;
+            reportBtn.textContent = '📊 รายงานที่บันทึกไว้';
+            
+            if (window.isCurrentUserAdmin) {
+                document.getElementById('exportAllBtn').classList.remove('hidden');
+                document.getElementById('showAdminBtn').classList.remove('hidden');
+                window.showMessage('เข้าสู่ระบบในฐานะ Admin', 'success');
+            }
+        }
+
+        // --- Admin Dashboard Logic ---
+        let dashboardUnsubscribe = null;
+        window.loadAdminDashboardData = () => {
+            if (!window.isCurrentUserAdmin || !db || !currentUserId) return;
+            
+            if (dashboardUnsubscribe) dashboardUnsubscribe();
+            dashboardUnsubscribe = onSnapshot(window.getPublicExpensesRef(), (snapshot) => {
+                window.allPublicExpenses = [];
+                snapshot.forEach(doc => window.allPublicExpenses.push({ id: doc.id, ...doc.data() }));
+                
+                // Sort by delivery date descending in memory
+                window.allPublicExpenses.sort((a, b) => (b.deliveryDate || '').localeCompare(a.deliveryDate || ''));
+                
+                // Populate Month Filter
+                populateDashboardMonthFilter();
+                
+                // Render Default (All Time or Current Month)
+                window.renderAdminDashboard();
+            }, (error) => { console.error("Error loading dashboard:", error); });
+        };
+
+        window.populateDashboardMonthFilter = () => {
+            const select = document.getElementById('dashboardMonthSelect');
+            const months = new Set();
+            
+            window.allPublicExpenses.forEach(exp => {
+                if (exp.deliveryDate) {
+                    const d = new Date(exp.deliveryDate);
+                    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+                    months.add(key);
+                }
+            });
+            
+            // Save current selection
+            const currentVal = select.value;
+            
+            select.innerHTML = '<option value="all">ทั้งหมด (All Time)</option>';
+            
+            const sortedMonths = Array.from(months).sort().reverse();
+            const thaiMonths = ["ม.ค.", "ก.พ.", "มี.ค.", "เม.ย.", "พ.ค.", "มิ.ย.", "ก.ค.", "ส.ค.", "ก.ย.", "ต.ค.", "พ.ย.", "ธ.ค."];
+            
+            sortedMonths.forEach(m => {
+                const [y, mo] = m.split('-');
+                const label = `${thaiMonths[parseInt(mo)-1]} ${parseInt(y)+543}`;
+                const opt = document.createElement('option');
+                opt.value = m;
+                opt.textContent = label;
+                select.appendChild(opt);
+            });
+
+            // Set default to current month if exists, else 'all'
+            const today = new Date();
+            const currentMonthKey = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`;
+            
+            if (months.has(currentMonthKey)) {
+                select.value = currentMonthKey;
+            } else if (currentVal && months.has(currentVal)) {
+                select.value = currentVal;
+            }
+        };
+
+        window.renderAdminDashboard = () => {
+            const filterMonth = document.getElementById('dashboardMonthSelect').value;
+            let filteredData = window.allPublicExpenses;
+
+            if (filterMonth !== 'all') {
+                filteredData = filteredData.filter(exp => {
+                    if (!exp.deliveryDate) return false;
+                    return exp.deliveryDate.startsWith(filterMonth);
+                });
+            }
+
+            // Calculate Metrics
+            let totalAmount = 0;
+            let totalTrips = 0;
+            const employeeStats = {};
+
+            filteredData.forEach(exp => {
+                totalAmount += (parseFloat(exp.totalAmount) || 0);
+                totalTrips += (parseFloat(exp.unitTripFee) || 0);
+                
+                const empName = exp.delivererName || 'Unknown';
+                if (!employeeStats[empName]) {
+                    employeeStats[empName] = { trips: 0, amount: 0 };
+                }
+                employeeStats[empName].trips += (parseFloat(exp.unitTripFee) || 0);
+                employeeStats[empName].amount += (parseFloat(exp.totalAmount) || 0);
+            });
+
+            // Update Cards
+            document.getElementById('dash-total-amount').textContent = totalAmount.toLocaleString('th-TH', { minimumFractionDigits: 2 });
+            document.getElementById('dash-total-trips').textContent = totalTrips.toLocaleString('th-TH');
+
+            // Find Top Employee
+            let topEmpName = '-';
+            let topEmpAmt = 0;
+            const sortedEmployees = Object.entries(employeeStats).sort(([,a], [,b]) => b.amount - a.amount);
+            
+            if (sortedEmployees.length > 0) {
+                topEmpName = sortedEmployees[0][0];
+                topEmpAmt = sortedEmployees[0][1].amount;
+            }
+            
+            document.getElementById('dash-top-emp').textContent = topEmpName;
+            document.getElementById('dash-top-emp-amt').textContent = `${topEmpAmt.toLocaleString('th-TH', { minimumFractionDigits: 2 })} บาท`;
+
+            // Render Employee Table
+            const tbody = document.getElementById('dash-emp-table-body');
+            tbody.innerHTML = '';
+            
+            sortedEmployees.forEach(([name, stats]) => {
+                const tr = document.createElement('tr');
+                tr.className = 'hover:bg-gray-50';
+                tr.innerHTML = `
+                    <td class="px-4 py-3 border-b">${name}</td>
+                    <td class="px-4 py-3 border-b text-right font-medium">${stats.trips}</td>
+                    <td class="px-4 py-3 border-b text-right font-bold text-primary">${stats.amount.toLocaleString('th-TH', { minimumFractionDigits: 2 })}</td>
+                `;
+                tbody.appendChild(tr);
+            });
+        };
+
+        // --- Core Functions ---
+        window.saveOrUpdateExpenseRecord = async () => {
+            if (!db || !currentUserId) return window.showMessage('กรุณาเข้าสู่ระบบ', 'error');
+
+            const record = {
+                deliveryDate: document.getElementById('deliveryDate').value,
+                employeeId: document.getElementById('employeeId').value,
+                delivererName: document.getElementById('delivererName').value,
+                vehicleNo: document.getElementById('vehicleNo').value,
+                route: document.getElementById('route').value,
+                tripFee: parseFloat(document.getElementById('tripFee').value) || 0,
+                unitTripFee: parseFloat(document.getElementById('unitTripFee').value) || 0,
+                tripFeeRate: window.currentTripRate || 0, 
+                overnightFee: parseFloat(document.getElementById('overnightFee').value) || 0,
+                unitOvernightFee: parseFloat(document.getElementById('unitOvernightFee').value) || 0,
+                overnightFeeRate: window.currentOvernightRate || 0, 
+                overtimeFee: parseFloat(document.getElementById('overtimeFee').value) || 0,
+                unitOvertimeFee: parseFloat(document.getElementById('unitOvertimeFee').value) || 0,
+                totalAmount: parseFloat(document.getElementById('totalAmount').value) || 0,
+                note: document.getElementById('note').value,
+            };
+
+            if (!record.deliveryDate || !record.employeeId) return window.showMessage('กรุณากรอกวันที่และเลือกพนักงาน', 'error');
+
+            try {
+                if (window.isEditMode && window.currentEditingDocId) {
+                    await Promise.all([
+                        updateDoc(doc(window.getExpensesRef(currentUserId), window.currentEditingDocId), { ...record, updatedAt: serverTimestamp() }),
+                        updateDoc(doc(window.getPublicExpensesRef(), window.currentEditingDocId), { ...record, updatedAt: serverTimestamp() })
+                    ]);
+                    window.showMessage('✅ แก้ไขสำเร็จ', 'success');
+                    window.cancelEdit();
+                } else {
+                    const tempDocRef = doc(window.getPublicExpensesRef());
+                    const finalRecord = { ...record, createdAt: serverTimestamp(), userId: currentUserId };
+                    
+                    // 1. บันทึกลง Firebase
+                    await Promise.all([
+                        setDoc(doc(window.getExpensesRef(currentUserId), tempDocRef.id), finalRecord),
+                        setDoc(doc(window.getPublicExpensesRef(), tempDocRef.id), finalRecord)   
+                    ]);
+
+                    // ==========================================
+                    // 2. เพิ่มการเชื่อมต่อส่งข้อมูลไป Google Sheets
+                    // ==========================================
+                    const GOOGLE_SHEETS_WEBAPP_URL = "https://script.google.com/macros/s/AKfycbxEN5jYn2ATFwE4PSHnOlQrmJ9poaAWe2kPSH2XWQZMjuVN1qjp_qbl7F3bwrF0fxC1/exec";
+                    
+                    if(GOOGLE_SHEETS_WEBAPP_URL) {
+                        fetch(GOOGLE_SHEETS_WEBAPP_URL, {
+                            method: 'POST',
+                            mode: 'no-cors', // เพิ่มโหมด no-cors เพื่อแก้ปัญหา Browser บล็อคการส่งข้อมูลข้ามโดเมน
+                            headers: {
+                                'Content-Type': 'application/json'
+                            },
+                            body: JSON.stringify(record)
+                        }).catch(err => console.error("ส่งเข้า Sheet ไม่สำเร็จ: ", err));
+                    }
+                    // ==========================================
+
+                    window.showMessage('✅ บันทึกสำเร็จ', 'success');
+                    window.resetForm();
+                }
+            } catch (e) { 
+                console.error(e);
+                window.showMessage('เกิดข้อผิดพลาด', 'error'); 
+            }
+        };
+
+        window.handleAddEmployee = async (e) => {
+            e.preventDefault();
+            if (!db || !currentUserId) return;
+            const name = document.getElementById('newEmpName').value;
+            const id = document.getElementById('newEmpId').value;
+            const tripRate = parseFloat(document.getElementById('newEmpTripRate').value) || 0;
+            const overnightRate = parseFloat(document.getElementById('newEmpOvernightRate').value) || 0;
+            if (!name || !id) return;
+            await addDoc(window.getEmployeesCollection(), { name, id, tripFeeRate: tripRate, overnightFeeRate: overnightRate });
+            window.showMessage('เพิ่มพนักงานสำเร็จ', 'success');
+            document.getElementById('addEmployeeForm').reset();
+        };
+
+        window.deleteEmployeeMaster = async (docId, name) => {
+            if (!await window.showConfirmationModal(`ลบพนักงาน ${name}?`)) return;
+            await deleteDoc(doc(window.getEmployeesCollection(), docId));
+            window.showMessage('ลบสำเร็จ', 'success');
+        };
+
+        window.handleAddVehicle = async (e) => {
+            e.preventDefault();
+            if (!db || !currentUserId) return;
+            const plate = document.getElementById('newVehiclePlate').value;
+            if (!plate) return;
+            await addDoc(window.getVehiclesCollection(), { plateNumber: plate });
+            window.showMessage('เพิ่มรถสำเร็จ', 'success');
+            document.getElementById('addVehicleForm').reset();
+        };
+
+        window.deleteVehicleMaster = async (docId, plate) => {
+            if (!await window.showConfirmationModal(`ลบรถ ${plate}?`)) return;
+            await deleteDoc(doc(window.getVehiclesCollection(), docId));
+            window.showMessage('ลบสำเร็จ', 'success');
+        };
+
+        // --- Helpers ---
+        function populateEmployeesDropdown() {
+            const select = document.getElementById('employeeSelect');
+            select.innerHTML = '<option value="" data-name="">--- เลือกพนักงาน ---</option>';
+            window.allEmployees.forEach(emp => {
+                const opt = document.createElement('option');
+                opt.value = emp.id;
+                opt.textContent = `${emp.name} (${emp.id})`;
+                opt.setAttribute('data-name', emp.name);
+                opt.setAttribute('data-trip-rate', emp.tripFeeRate || 0);
+                opt.setAttribute('data-overnight-rate', emp.overnightFeeRate || 0);
+                select.appendChild(opt);
+            });
+        }
+
+        function populateVehiclesDropdown() {
+            const select = document.getElementById('vehicleNoSelect');
+            select.innerHTML = '<option value="">--- เลือกทะเบียนรถ ---</option>';
+            window.allVehicles.forEach(v => {
+                const opt = document.createElement('option');
+                opt.value = v.plateNumber;
+                opt.textContent = v.plateNumber;
+                select.appendChild(opt);
+            });
+        }
+
+        function renderAdminEmployeesTable() {
+            const tbody = document.getElementById('admin-employees-body');
+            tbody.innerHTML = '';
+            window.allEmployees.forEach(emp => {
+                const tr = document.createElement('tr');
+                tr.className = "hover:bg-gray-50";
+                tr.innerHTML = `
+                    <td class="px-4 py-2 border-b">${emp.id}</td>
+                    <td class="px-4 py-2 border-b">${emp.name}</td>
+                    <td class="px-4 py-2 border-b text-right">${emp.tripFeeRate || 0}</td>
+                    <td class="px-4 py-2 border-b text-right">${emp.overnightFeeRate || 0}</td>
+                    <td class="px-4 py-2 border-b text-center"><button onclick="window.deleteEmployeeMaster('${emp._id}', '${emp.name}')" class="text-red-500 hover:text-red-700 font-bold">ลบ</button></td>
+                `;
+                tbody.appendChild(tr);
+            });
+        }
+
+        function renderAdminVehiclesTable() {
+            const tbody = document.getElementById('admin-vehicles-body');
+            tbody.innerHTML = '';
+            window.allVehicles.forEach(v => {
+                const tr = document.createElement('tr');
+                tr.className = "hover:bg-gray-50";
+                tr.innerHTML = `
+                    <td class="px-4 py-2 border-b">${v.plateNumber}</td>
+                    <td class="px-4 py-2 border-b text-center"><button onclick="window.deleteVehicleMaster('${v._id}', '${v.plateNumber}')" class="text-red-500 hover:text-red-700 font-bold">ลบ</button></td>
+                `;
+                tbody.appendChild(tr);
+            });
+        }
+
+        let expensesUnsubscribe = null;
+        window.loadExpenses = () => {
+            if (!db || !currentUserId) return;
+            
+            if (expensesUnsubscribe) expensesUnsubscribe();
+            expensesUnsubscribe = onSnapshot(window.getExpensesRef(currentUserId), (snapshot) => {
+                const expenses = [];
+                snapshot.forEach((doc) => expenses.push({ id: doc.id, ...doc.data() }));
+                
+                // Memory sort by createdAt descending
+                expenses.sort((a, b) => (b.createdAt?.toMillis() || 0) - (a.createdAt?.toMillis() || 0));
+                
+                window.renderReportTable(expenses, 'report-table-body');
+                window.renderMonthlySummaryTable(window.calculateMonthlySummary(expenses), 'monthly-summary-table-body');
+            }, (error) => { console.error("Error loading expenses:", error); });
+        };
+
+        window.calculateMonthlySummary = (expenses) => {
+            const summary = {};
+            expenses.forEach(exp => {
+                let date = exp.deliveryDate ? new Date(exp.deliveryDate + 'T00:00:00') : (exp.createdAt?.toDate() || new Date());
+                const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+                if (!summary[key]) summary[key] = { totalTrips: 0, totalTripFee: 0 };
+                summary[key].totalTrips += (parseFloat(exp.unitTripFee) || 0);
+                summary[key].totalTripFee += (parseFloat(exp.tripFee) || 0);
+            });
+            return Object.keys(summary).map(key => ({ monthKey: key, ...summary[key] })).sort((a, b) => b.monthKey.localeCompare(a.monthKey));
+        };
+
+        window.renderReportTable = (expenses, tbodyId) => {
+            const tbody = document.getElementById(tbodyId);
+            tbody.innerHTML = expenses.length ? '' : `<tr><td colspan="10" class="px-3 py-4 text-center text-gray-500 italic">ไม่พบข้อมูล</td></tr>`;
+            expenses.forEach(exp => {
+                const row = tbody.insertRow();
+                row.className = 'hover:bg-gray-50';
+                const dateStr = exp.createdAt?.toDate ? exp.createdAt.toDate().toLocaleDateString('th-TH') : '-';
+                row.innerHTML = `
+                    <td class="px-3 py-2 whitespace-nowrap">${exp.deliveryDate || '-'}</td>
+                    <td class="px-3 py-2 text-xs text-gray-500">${dateStr}</td>
+                    <td class="px-3 py-2">${exp.delivererName}</td>
+                    <td class="px-3 py-2">${exp.vehicleNo}</td>
+                    <td class="px-3 py-2 text-right">${(exp.unitTripFee||0).toFixed(0)}</td>
+                    <td class="px-3 py-2 text-right">${(exp.tripFee||0).toFixed(2)}</td>
+                    <td class="px-3 py-2 text-right">${(exp.overnightFee||0).toFixed(2)}</td>
+                    <td class="px-3 py-2 text-right">${(exp.overtimeFee||0).toFixed(2)}</td>
+                    <td class="px-3 py-2 text-right font-bold text-secondary">${(exp.totalAmount||0).toFixed(2)}</td>
+                    <td class="px-3 py-2 text-center">
+                         <div class="flex justify-center space-x-1">
+                            <button onclick="window.startEditExpense('${exp.id}')" class="text-blue-500 hover:text-blue-700">✏️</button>
+                            <button onclick="window.deleteExpense('${exp.id}', '${exp.delivererName}')" class="text-red-500 hover:text-red-700">🗑️</button>
+                         </div>
+                    </td>
+                `;
+            });
+        };
+
+        window.renderMonthlySummaryTable = (summary, tbodyId) => {
+            const tbody = document.getElementById(tbodyId);
+            tbody.innerHTML = summary.length ? '' : `<tr><td colspan="3" class="px-3 py-4 text-center">ไม่พบข้อมูล</td></tr>`;
+            const months = ["ม.ค.", "ก.พ.", "มี.ค.", "เม.ย.", "พ.ค.", "มิ.ย.", "ก.ค.", "ส.ค.", "ก.ย.", "ต.ค.", "พ.ย.", "ธ.ค."];
+            summary.forEach(item => {
+                const [y, m] = item.monthKey.split('-');
+                const row = tbody.insertRow();
+                row.innerHTML = `
+                    <td class="px-3 py-2 font-semibold">${months[parseInt(m)-1]} ${parseInt(y)+543}</td>
+                    <td class="px-3 py-2 text-right font-bold text-secondary">${item.totalTrips.toFixed(0)}</td>
+                    <td class="px-3 py-2 text-right font-bold text-primary">${item.totalTripFee.toFixed(2)}</td>
+                `;
+            });
+        };
+
+        window.exportCSV = () => { window.generateCSV(document.getElementById('report-table'), `ค่าใช้จ่ายส่วนตัว_${(currentUserId || '').slice(0, 5)}`); };
+
+        window.exportAllCSV = async () => {
+            if (!window.isCurrentUserAdmin) return window.showMessage('ไม่มีสิทธิ์', 'error');
+            const snap = await getDocs(window.getPublicExpensesRef());
+            const expenses = [];
+            snap.forEach(doc => expenses.push(doc.data()));
+            if (expenses.length === 0) return window.showMessage('ไม่พบข้อมูล', 'warning');
+            
+            // เพิ่ม header "วันที่ทำรายการ"
+            let csv = "\uFEFFวันที่จัดส่ง,วันที่ทำรายการ,ชื่อพนักงาน,ทะเบียนรถ,ค่าเที่ยว,ค่าค้างคืน,OT,รวมสุทธิ,หมายเหตุ\n";
+            
+            expenses.forEach(e => {
+                const safe = (t) => `"${String(t || '').replace(/"/g, '""')}"`;
+                
+                // จัดรูปแบบวันที่ทำรายการ (createdAt)
+                const txDate = e.createdAt && e.createdAt.toDate ? e.createdAt.toDate().toLocaleString('th-TH') : '';
+                
+                // เพิ่ม txDate เข้าไปในแถว
+                csv += `${safe(e.deliveryDate)},${safe(txDate)},${safe(e.delivererName)},${safe(e.vehicleNo)},${e.tripFee},${e.overnightFee},${e.overtimeFee},${e.totalAmount},${safe(e.note)}\n`;
+            });
+            
+            const link = document.createElement('a');
+            link.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8;' }));
+            link.download = `All_Expenses_${new Date().toISOString().slice(0,10)}.csv`;
+            link.click();
+        };
+
+        window.generateCSV = (table, filenamePrefix) => {
+            let csv = [];
+            const headers = Array.from(table.querySelectorAll('thead th')).map(th => th.textContent.trim()).slice(0, -1);
+            csv.push(headers.join(','));
+            table.querySelectorAll('tbody tr').forEach(row => {
+                const rowData = Array.from(row.querySelectorAll('td')).map(td => `"${td.textContent.trim().replace(/"/g, '""')}"`);
+                if(rowData.length > 1) csv.push(rowData.slice(0, 9).join(','));
+            });
+            const link = document.createElement('a');
+            link.href = URL.createObjectURL(new Blob([`\ufeff${csv.join('\n')}`], { type: 'text/csv;charset=utf-8;' }));
+            link.download = `${filenamePrefix}.csv`;
+            link.click();
+        };
+
+        window.showMessage = (msg, type = 'info') => {
+            const box = document.getElementById('message-box');
+            const content = document.getElementById('message-content');
+            content.className = `p-4 rounded-lg shadow-xl text-white font-bold max-w-sm ${type === 'success' ? 'bg-green-500' : type === 'error' ? 'bg-red-500' : 'bg-blue-500'}`;
+            content.textContent = msg;
+            box.classList.remove('translate-x-full');
+            setTimeout(() => box.classList.add('translate-x-full'), 3000);
+        };
+
+        window.showConfirmationModal = (msg) => {
+            return new Promise(resolve => {
+                const modal = document.getElementById('confirmation-modal');
+                document.getElementById('confirmation-message').textContent = msg;
+                modal.classList.remove('hidden');
+                const clean = () => { modal.classList.add('hidden'); yes.removeEventListener('click', y); no.removeEventListener('click', n); };
+                const y = () => { clean(); resolve(true); };
+                const n = () => { clean(); resolve(false); };
+                const yes = document.getElementById('confirm-yes');
+                const no = document.getElementById('confirm-no');
+                yes.addEventListener('click', y);
+                no.addEventListener('click', n);
+            });
+        };
+
+        window.startEditExpense = async (id) => {
+            const snap = await getDoc(doc(window.getExpensesRef(currentUserId), id));
+            if (!snap.exists()) return;
+            const data = snap.data();
+            document.getElementById('deliveryDate').value = data.deliveryDate || '';
+            document.getElementById('employeeSelect').value = data.employeeId || '';
+            document.getElementById('vehicleNoSelect').value = data.vehicleNo || '';
+            document.getElementById('route').value = data.route || '';
+            document.getElementById('note').value = data.note || '';
+            document.getElementById('unitTripFee').value = (data.unitTripFee || 0).toFixed(0);
+            document.getElementById('unitOvernightFee').value = (data.unitOvernightFee || 0).toFixed(0);
+            document.getElementById('unitOvertimeFee').value = (data.unitOvertimeFee || 0).toFixed(0);
+            document.getElementById('tripFee').value = (data.tripFee || 0).toFixed(2);
+            document.getElementById('overnightFee').value = (data.overnightFee || 0).toFixed(2);
+            document.getElementById('overtimeFee').value = (data.overtimeFee || 0).toFixed(2);
+            window.isEditMode = true;
+            window.currentEditingDocId = id;
+            handleEmployeeSelection(); 
+            handleVehicleSelection();
+            document.getElementById('saveBtn').textContent = '✅ บันทึกการแก้ไข (Update)';
+            document.getElementById('cancelEditBtn').classList.remove('hidden');
+            window.showFormView();
+        };
+
+        window.cancelEdit = () => {
+            window.isEditMode = false;
+            window.currentEditingDocId = null;
+            document.getElementById('saveBtn').textContent = '💾 บันทึก (Save)';
+            document.getElementById('cancelEditBtn').classList.add('hidden');
+            window.resetForm();
+        };
+
+        window.deleteExpense = async (id, name) => {
+             if (!await window.showConfirmationModal(`ลบรายการของ ${name}?`)) return;
+             await Promise.all([deleteDoc(doc(window.getExpensesRef(currentUserId), id)), deleteDoc(doc(window.getPublicExpensesRef(), id))]);
+             window.showMessage('ลบสำเร็จ', 'success');
+        };
+
+        window.handleEmployeeSelection = () => {
+            const sel = document.getElementById('employeeSelect');
+            if(sel.selectedIndex === -1) return;
+            const opt = sel.options[sel.selectedIndex];
+            document.getElementById('employeeId').value = sel.value;
+            document.getElementById('delivererName').value = opt.getAttribute('data-name') || '';
+            window.currentTripRate = parseFloat(opt.getAttribute('data-trip-rate')) || 0;
+            window.currentOvernightRate = parseFloat(opt.getAttribute('data-overnight-rate')) || 0;
+            document.getElementById('tripFeeRateDisplay').value = `อัตรา: ${window.currentTripRate} บ.`;
+            document.getElementById('overnightFeeRateDisplay').value = `อัตรา: ${window.currentOvernightRate} บ.`;
+            if(!window.isEditMode) calculateFees();
+            calculateTotal();
+        };
+
+        window.handleVehicleSelection = () => { document.getElementById('vehicleNo').value = document.getElementById('vehicleNoSelect').value; };
+        window.calculateFees = () => {
+             const uTrip = parseFloat(document.getElementById('unitTripFee').value)||0;
+             const uOver = parseFloat(document.getElementById('unitOvernightFee').value)||0;
+             document.getElementById('tripFee').value = (uTrip * (window.currentTripRate || 0)).toFixed(2);
+             document.getElementById('overnightFee').value = (uOver * (window.currentOvernightRate || 0)).toFixed(2);
+        };
+        window.calculateTotal = () => {
+            let total = 0;
+            document.querySelectorAll('.expense-amount').forEach(i => total += (parseFloat(i.value)||0));
+            document.getElementById('totalAmount').value = total.toFixed(2);
+        };
+        window.resetForm = () => {
+             document.getElementById('deliveryDate').value = '';
+             document.getElementById('employeeSelect').value = '';
+             document.getElementById('vehicleNoSelect').value = '';
+             document.getElementById('route').value = '';
+             document.getElementById('note').value = '';
+             ['unitTripFee', 'unitOvernightFee', 'unitOvertimeFee'].forEach(id => document.getElementById(id).value = '0');
+             ['tripFee', 'overnightFee', 'overtimeFee', 'totalAmount'].forEach(id => document.getElementById(id).value = '0.00');
+             window.handleEmployeeSelection();
+             window.handleVehicleSelection();
+        };
+
+        window.showFormView = () => {
+            document.getElementById('form-section').style.display = 'block';
+            document.getElementById('report-section').style.display = 'none';
+            document.getElementById('admin-section').style.display = 'none';
+            setActiveBtn('showFormBtn');
+        };
+        window.showReportView = () => {
+            document.getElementById('form-section').style.display = 'none';
+            document.getElementById('report-section').style.display = 'block';
+            document.getElementById('admin-section').style.display = 'none';
+            setActiveBtn('showReportBtn');
+            window.loadExpenses();
+            window.cancelEdit();
+        };
+        window.showAdminView = () => {
+             if (!window.isCurrentUserAdmin) return window.showMessage('ไม่มีสิทธิ์เข้าถึง', 'error');
+            document.getElementById('form-section').style.display = 'none';
+            document.getElementById('report-section').style.display = 'none';
+            document.getElementById('admin-section').style.display = 'block';
+            setActiveBtn('showAdminBtn');
+            window.cancelEdit();
+            window.loadAdminDashboardData(); // Load Admin Data
+        };
+
+        function setActiveBtn(id) {
+            ['showFormBtn', 'showReportBtn', 'showAdminBtn'].forEach(btnId => {
+                const btn = document.getElementById(btnId);
+                if (btnId === id) { btn.classList.add('bg-primary', 'text-white'); btn.classList.remove('bg-gray-200', 'text-gray-800'); } 
+                else { btn.classList.remove('bg-primary', 'text-white'); btn.classList.add('bg-gray-200', 'text-gray-800'); }
+            });
+        }
+        window.generateNumberOptions = (id, max) => {
+            const sel = document.getElementById(id);
+            for(let i=0; i<=max; i++) { const opt = document.createElement('option'); opt.value=i; opt.textContent=i; sel.appendChild(opt); }
+        };
+
+        document.addEventListener('DOMContentLoaded', () => {
+            document.getElementById('showFormBtn').addEventListener('click', showFormView);
+            document.getElementById('showReportBtn').addEventListener('click', showReportView);
+            document.getElementById('showAdminBtn').addEventListener('click', showAdminView);
+            document.getElementById('employeeSelect').addEventListener('change', window.handleEmployeeSelection);
+            document.getElementById('vehicleNoSelect').addEventListener('change', window.handleVehicleSelection);
+            document.getElementById('addEmployeeForm').addEventListener('submit', window.handleAddEmployee);
+            document.getElementById('addVehicleForm').addEventListener('submit', window.handleAddVehicle);
+            ['unitTripFee', 'unitOvernightFee'].forEach(id => document.getElementById(id).addEventListener('change', () => { window.calculateFees(); window.calculateTotal(); }));
+            document.querySelectorAll('.expense-amount').forEach(el => el.addEventListener('input', window.calculateTotal));
+            window.generateNumberOptions('unitTripFee', 60);
+            window.generateNumberOptions('unitOvernightFee', 60);
+            window.generateNumberOptions('unitOvertimeFee', 60);
+            window.showFormView();
+        });
+    </script>
+</head>
+<body class="bg-gray-50 p-4 sm:p-8 font-sans">
+    
+    <div id="message-box" class="fixed top-5 right-5 z-50 transition-transform duration-300 transform translate-x-full">
+        <div id="message-content" class="p-4 rounded-lg shadow-xl text-white font-bold max-w-sm"></div>
+    </div>
+
+    <div id="confirmation-modal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[100] hidden">
+        <div class="bg-white p-6 rounded-lg shadow-2xl max-w-sm w-full mx-4">
+            <h3 class="text-xl font-bold text-red-600 mb-4">ยืนยันการดำเนินการ</h3>
+            <p id="confirmation-message" class="mb-6 text-gray-700">ยืนยัน?</p>
+            <div class="flex justify-end space-x-4">
+                <button id="confirm-no" class="px-4 py-2 bg-gray-300 rounded hover:bg-gray-400">ยกเลิก</button>
+                <button id="confirm-yes" class="px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700">ยืนยัน</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="max-w-4xl mx-auto bg-white shadow-xl rounded-xl p-6 md:p-10">
+        
+        <!-- Navigation -->
+        <div class="flex space-x-2 sm:space-x-4 mb-6 no-print overflow-x-auto pb-2">
+            <button id="showFormBtn" class="flex-1 py-2 px-4 rounded-lg font-bold bg-primary text-white shadow min-w-[120px]">
+                📝 ฟอร์มบันทึก
+            </button>
+            <button id="showReportBtn" class="flex-1 py-2 px-4 rounded-lg font-bold bg-gray-200 text-gray-800 shadow min-w-[120px]">
+                📊 รายงาน
+            </button>
+            <button id="showAdminBtn" class="hidden flex-1 py-2 px-4 rounded-lg font-bold bg-indigo-500 text-white shadow min-w-[120px]">
+                ⚙️ Admin Panel
+            </button>
+        </div>
+
+        <!-- FORM Section -->
+        <div id="form-section" class="form-page">
+            <h1 class="text-2xl sm:text-3xl font-extrabold text-primary mb-6 border-b-4 border-primary pb-2 text-center">
+                แบบฟอร์มบันทึกค่าใช้จ่าย
+            </h1>
+
+            <section class="mb-6 p-4 bg-gray-50 rounded-lg border">
+                <div class="grid md:grid-cols-2 gap-4">
+                    <div class="space-y-4">
+                        <label class="block">
+                            <span class="text-sm font-medium text-gray-700">วันที่จัดส่ง</span>
+                            <input type="date" id="deliveryDate" class="mt-1 block w-full rounded border-gray-300 p-2 shadow-sm focus:ring-primary focus:border-primary">
+                        </label>
+                        <label class="block">
+                            <span class="text-sm font-medium text-gray-700">เลือกพนักงาน</span>
+                            <select id="employeeSelect" class="mt-1 block w-full rounded border-gray-300 p-2 shadow-sm focus:ring-primary">
+                                <option>กำลังโหลด...</option>
+                            </select>
+                        </label>
+                        <label class="block">
+                            <span class="text-sm font-medium text-gray-700">รหัสพนักงาน</span>
+                            <input type="text" id="employeeId" disabled class="mt-1 block w-full bg-gray-100 rounded p-2">
+                        </label>
+                        <input type="hidden" id="delivererName">
+                    </div>
+                    <div class="space-y-4">
+                        <label class="block">
+                            <span class="text-sm font-medium text-gray-700">เลือกทะเบียนรถ</span>
+                            <select id="vehicleNoSelect" class="mt-1 block w-full rounded border-gray-300 p-2 shadow-sm focus:ring-primary">
+                                <option>กำลังโหลด...</option>
+                            </select>
+                        </label>
+                        <label class="block">
+                            <span class="text-sm font-medium text-gray-700">ทะเบียนรถ (Auto)</span>
+                            <input type="text" id="vehicleNo" disabled class="mt-1 block w-full bg-gray-100 rounded p-2">
+                        </label>
+                        <label class="block">
+                            <span class="text-sm font-medium text-gray-700">เส้นทาง</span>
+                            <textarea id="route" rows="2" class="mt-1 block w-full rounded border-gray-300 p-2 shadow-sm focus:ring-primary"></textarea>
+                        </label>
+                    </div>
+                </div>
+            </section>
+
+            <section class="mb-6 space-y-3">
+                <div class="grid grid-cols-6 gap-2 items-end">
+                    <div class="col-span-3 sm:col-span-2">
+                        <label class="text-xs text-gray-500">ค่าเที่ยว</label>
+                        <input type="text" id="tripFeeRateDisplay" disabled value="0 บ." class="w-full text-xs bg-green-100 text-green-800 p-2 rounded">
+                    </div>
+                    <div class="col-span-3 sm:col-span-1">
+                        <label class="text-xs text-gray-500">หน่วย</label>
+                        <select id="unitTripFee" class="w-full p-2 border rounded text-right"></select>
+                    </div>
+                    <div class="col-span-6 sm:col-span-3">
+                        <label class="text-xs text-gray-500">รวม (บาท)</label>
+                        <input type="number" id="tripFee" value="0.00" class="expense-amount w-full p-2 border rounded text-right font-bold bg-blue-50 focus:ring-secondary">
+                    </div>
+                </div>
+                
+                <div class="grid grid-cols-6 gap-2 items-end">
+                    <div class="col-span-3 sm:col-span-2">
+                        <label class="text-xs text-gray-500">ค่าค้างคืน</label>
+                        <input type="text" id="overnightFeeRateDisplay" disabled value="0 บ." class="w-full text-xs bg-green-100 text-green-800 p-2 rounded">
+                    </div>
+                    <div class="col-span-3 sm:col-span-1">
+                        <label class="text-xs text-gray-500">คืน</label>
+                        <select id="unitOvernightFee" class="w-full p-2 border rounded text-right"></select>
+                    </div>
+                    <div class="col-span-6 sm:col-span-3">
+                        <label class="text-xs text-gray-500">รวม (บาท)</label>
+                        <input type="number" id="overnightFee" value="0.00" class="expense-amount w-full p-2 border rounded text-right font-bold bg-blue-50 focus:ring-secondary">
+                    </div>
+                </div>
+
+                <div class="grid grid-cols-6 gap-2 items-end">
+                    <div class="col-span-3 sm:col-span-2">
+                        <label class="text-xs text-gray-500">ค่าล่วงเวลา (OT)</label>
+                        <div class="w-full text-xs bg-gray-200 text-gray-500 p-2 rounded">ตามจริง</div>
+                    </div>
+                    <div class="col-span-3 sm:col-span-1">
+                        <label class="text-xs text-gray-500">ชม.</label>
+                        <select id="unitOvertimeFee" class="w-full p-2 border rounded text-right"></select>
+                    </div>
+                    <div class="col-span-6 sm:col-span-3">
+                        <label class="text-xs text-gray-500">รวม (บาท)</label>
+                        <input type="number" id="overtimeFee" value="0.00" class="expense-amount w-full p-2 border rounded text-right font-bold bg-blue-50 focus:ring-secondary">
+                    </div>
+                </div>
+            </section>
+
+            <section class="mb-8 p-6 bg-primary/10 rounded-lg border border-primary">
+                <div class="flex justify-between items-center mb-2">
+                    <span class="text-lg font-bold">รวมสุทธิ</span>
+                    <input type="text" id="totalAmount" disabled value="0.00" class="text-3xl font-extrabold text-secondary bg-transparent text-right w-1/2">
+                </div>
+                <textarea id="note" rows="2" placeholder="หมายเหตุ..." class="w-full p-2 border rounded"></textarea>
+            </section>
+
+            <div class="flex flex-col md:flex-row gap-3 no-print">
+                <button id="saveBtn" onclick="window.saveOrUpdateExpenseRecord()" class="flex-1 py-3 bg-primary text-white font-bold rounded shadow hover:bg-green-600">💾 บันทึก (Save)</button>
+                <button id="cancelEditBtn" onclick="window.cancelEdit()" class="hidden py-3 bg-yellow-600 text-white font-bold rounded shadow">❌ ยกเลิกแก้ไข</button>
+                <button onclick="window.print()" class="flex-1 py-3 bg-gray-500 text-white font-bold rounded shadow hover:bg-gray-600">📄 พิมพ์</button>
+            </div>
+        </div>
+        
+        <!-- REPORT Section -->
+        <div id="report-section" class="pt-4">
+            <h1 class="text-2xl font-bold text-secondary mb-6 text-center">รายงานค่าใช้จ่าย</h1>
+            
+            <div class="mb-6 p-4 bg-yellow-50 rounded border border-yellow-200">
+                <h3 class="font-bold text-yellow-800 mb-2">สรุปยอดรายเดือน</h3>
+                <div class="overflow-x-auto">
+                    <table class="w-full text-sm">
+                        <thead><tr class="text-left"><th class="p-2">เดือน</th><th class="p-2 text-right">เที่ยว</th><th class="p-2 text-right">เงิน</th></tr></thead>
+                        <tbody id="monthly-summary-table-body"></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div class="flex justify-between items-center mb-2 no-print">
+                <h3 class="font-bold">รายการละเอียด</h3>
+                <div class="space-x-2">
+                    <button onclick="window.exportCSV()" class="text-sm bg-green-600 text-white px-3 py-1 rounded">CSV ส่วนตัว</button>
+                    <button id="exportAllBtn" onclick="window.exportAllCSV()" class="hidden text-sm bg-red-600 text-white px-3 py-1 rounded">CSV รวม (Admin)</button>
+                </div>
+            </div>
+            
+            <div class="overflow-x-auto shadow rounded">
+                <table id="report-table" class="w-full text-sm bg-white">
+                    <thead class="bg-gray-100">
+                        <tr>
+                            <th class="p-3 text-left">วันที่</th><th class="p-3">บันทึก</th><th class="p-3">คนขับ</th><th class="p-3">รถ</th>
+                            <th class="p-3 text-right">เที่ยว</th><th class="p-3 text-right">ค่าเที่ยว</th><th class="p-3 text-right">ค้างคืน</th><th class="p-3 text-right">OT</th>
+                            <th class="p-3 text-right">รวม</th><th class="p-3 text-center">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="report-table-body" class="divide-y"></tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- ADMIN PANEL Section -->
+        <div id="admin-section" class="pt-4">
+            <h1 class="text-2xl font-bold text-indigo-600 mb-6 text-center border-b-4 border-indigo-400 pb-2">Admin Panel</h1>
+
+            <!-- Admin Dashboard -->
+            <div id="admin-dashboard" class="mb-8 p-4 bg-white rounded-lg shadow-lg border border-indigo-100">
+                <div class="flex flex-col md:flex-row justify-between items-center mb-6">
+                    <h2 class="text-xl font-bold text-gray-700 flex items-center mb-2 md:mb-0">
+                        📊 Dashboard สรุปรวม
+                    </h2>
+                    <div class="flex items-center space-x-2">
+                        <label class="text-sm text-gray-600 font-medium">กรองเดือน:</label>
+                        <select id="dashboardMonthSelect" class="border-2 border-indigo-200 rounded-lg p-2 text-sm bg-indigo-50 focus:ring-indigo-500 focus:border-indigo-500" onchange="window.renderAdminDashboard()">
+                            <option value="all">ทั้งหมด (All Time)</option>
+                            <!-- JS Populated -->
+                        </select>
+                    </div>
+                </div>
+
+                <!-- Cards -->
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+                    <!-- Total Amount Card -->
+                    <div class="bg-gradient-to-br from-indigo-500 to-indigo-600 p-6 rounded-xl shadow-lg text-white">
+                        <h3 class="text-indigo-100 text-xs font-bold uppercase tracking-wider mb-1">ยอดรวมทั้งหมด (บาท)</h3>
+                        <div class="flex items-baseline">
+                            <p id="dash-total-amount" class="text-4xl font-extrabold">0.00</p>
+                        </div>
+                    </div>
+                    
+                    <!-- Total Trips Card -->
+                    <div class="bg-white p-6 rounded-xl shadow border-l-4 border-green-500">
+                        <h3 class="text-gray-500 text-xs font-bold uppercase tracking-wider mb-1">จำนวนเที่ยวรวม (เที่ยว)</h3>
+                        <p id="dash-total-trips" class="text-4xl font-extrabold text-green-600">0</p>
+                    </div>
+
+                    <!-- Top Performer Card -->
+                    <div class="bg-white p-6 rounded-xl shadow border-l-4 border-purple-500">
+                        <h3 class="text-gray-500 text-xs font-bold uppercase tracking-wider mb-1">เบิกสูงสุด (Top Spender)</h3>
+                        <p id="dash-top-emp" class="text-lg font-bold text-gray-800 truncate mt-1">-</p>
+                        <p id="dash-top-emp-amt" class="text-sm font-semibold text-purple-600">0.00 บาท</p>
+                    </div>
+                </div>
+
+                <!-- Breakdown Table -->
+                <div class="overflow-hidden rounded-lg border border-gray-200">
+                    <table class="min-w-full text-sm bg-white">
+                        <thead class="bg-gray-50 text-gray-700">
+                            <tr>
+                                <th class="px-4 py-3 text-left font-semibold uppercase tracking-wider">พนักงาน</th>
+                                <th class="px-4 py-3 text-right font-semibold uppercase tracking-wider">จำนวนเที่ยว</th>
+                                <th class="px-4 py-3 text-right font-semibold uppercase tracking-wider">รวมเงิน (บาท)</th>
+                            </tr>
+                        </thead>
+                        <tbody id="dash-emp-table-body" class="divide-y divide-gray-100">
+                            <tr><td colspan="3" class="p-4 text-center text-gray-400">กำลังโหลดข้อมูล...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            <!-- End Dashboard -->
+
+            <div class="grid md:grid-cols-2 gap-8">
+                <!-- Manage Employees -->
+                <div class="bg-white rounded-lg shadow border border-indigo-100 p-4">
+                    <h2 class="text-xl font-bold text-gray-700 mb-4 flex items-center">
+                        <span class="mr-2">👨‍💼</span> จัดการพนักงาน
+                    </h2>
+                    <form id="addEmployeeForm" class="mb-4 bg-indigo-50 p-3 rounded">
+                        <div class="grid grid-cols-2 gap-2 mb-2">
+                            <input type="text" id="newEmpName" placeholder="ชื่อ-นามสกุล" class="p-2 text-sm border rounded" required>
+                            <input type="text" id="newEmpId" placeholder="รหัสพนักงาน" class="p-2 text-sm border rounded" required>
+                        </div>
+                        <div class="grid grid-cols-2 gap-2 mb-2">
+                            <input type="number" id="newEmpTripRate" placeholder="เรทค่าเที่ยว (บาท)" class="p-2 text-sm border rounded">
+                            <input type="number" id="newEmpOvernightRate" placeholder="เรทค้างคืน (บาท)" class="p-2 text-sm border rounded">
+                        </div>
+                        <button type="submit" class="w-full bg-indigo-600 text-white py-1 rounded hover:bg-indigo-700 text-sm font-bold">+ เพิ่มพนักงาน</button>
+                    </form>
+                    <div class="overflow-y-auto max-h-60">
+                        <table class="w-full text-sm">
+                            <thead class="bg-gray-100 sticky top-0">
+                                <tr>
+                                    <th class="p-2 text-left">รหัส</th>
+                                    <th class="p-2 text-left">ชื่อ</th>
+                                    <th class="p-2 text-right">เที่ยว</th>
+                                    <th class="p-2 text-right">คืน</th>
+                                    <th class="p-2">ลบ</th>
+                                </tr>
+                            </thead>
+                            <tbody id="admin-employees-body" class="divide-y"></tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Manage Vehicles -->
+                <div class="bg-white rounded-lg shadow border border-indigo-100 p-4">
+                    <h2 class="text-xl font-bold text-gray-700 mb-4 flex items-center">
+                        <span class="mr-2">🚛</span> จัดการทะเบียนรถ
+                    </h2>
+                    <form id="addVehicleForm" class="mb-4 bg-indigo-50 p-3 rounded flex gap-2">
+                        <input type="text" id="newVehiclePlate" placeholder="เลขทะเบียน" class="flex-1 p-2 text-sm border rounded" required>
+                        <button type="submit" class="bg-indigo-600 text-white px-4 rounded hover:bg-indigo-700 text-sm font-bold">+ เพิ่ม</button>
+                    </form>
+                    <div class="overflow-y-auto max-h-60">
+                        <table class="w-full text-sm">
+                            <thead class="bg-gray-100 sticky top-0">
+                                <tr><th class="p-2 text-left">ทะเบียนรถ</th><th class="p-2">ลบ</th></tr>
+                            </thead>
+                            <tbody id="admin-vehicles-body" class="divide-y"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+    </div>
+</body>
+</html>
